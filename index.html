@@ -867,11 +867,41 @@
       pre.src = FRAMES[f];
     });
   }
-  // Shared path helper for the picks spells (the glyph effect was removed in 1.0.21 by owner rule).
+  // Shared path helper for the picks spells (the ASCII inhale is the default spell again, round 21).
   var spellCleanup = null;
   function quadPoint(from, control, to, t) {
     var u = 1 - t;
     return { x: u * u * from.x + 2 * u * t * control.x + t * t * to.x, y: u * u * from.y + 2 * u * t * control.y + t * t * to.y };
+  }
+  // ASCII inhale (owner, round 21: restored; the default spell). The page content around the chosen card dissolves into the five
+  // decorative glyphs @ # + : . and is sucked into the live launcher mouth. The glyph field is built from element GEOMETRY only
+  // (getBoundingClientRect of the picks blocks). It never reads page text, text nodes or form values, and the glyphs are not text.
+  var ASCII_GLYPHS = '@#+:.'.split(''); // PDF p14: only these five glyphs (no digits, no slashes)
+  // Round 22 (review D2, PDF p14/p15): the glyphs are cream and white (p15), with a few pale blue and pink. Every glyph is drawn with a navy
+  // halo, so it reads on the navy stage AND on the cream picks cards it flies out of.
+  var ASCII_COLORS = ['#FFFCE6', '#FFFFFF', '#F7F1D6', '#C7D6FF', '#F784EF'];
+  // Density falls off from the centre of each block: 1 at the centre, 0 at the edge.
+  function asciiFade(distance, halfWidth) { return Math.max(0, Math.min(1, 1 - distance / Math.max(1, halfWidth))); }
+  // Glyphs are scattered over each block's rectangle. Round 22 (D2): sparser and larger, 16 to 18 px, so the characters read at
+  // phone size. Each glyph has its own start delay, arc lift, spiral phase and spiral radius (the stream swirls into the mouth).
+  function makeAsciiGlyphs(elements, cap) {
+    var out = [], limit = Math.min(900, Math.max(0, cap || 900));
+    elements = Array.isArray(elements) ? elements : [];
+    for (var i = 0; i < elements.length && out.length < limit; i++) {
+      var r;
+      try { r = elements[i].getBoundingClientRect(); } catch (err) { r = null; }
+      if (!r || !r.width || !r.height) continue;
+      var count = Math.min(60, Math.max(6, Math.round(r.width * r.height / 900)));
+      var cx = r.left + r.width / 2, cy = r.top + r.height / 2, half = Math.hypot(r.width, r.height) / 2;
+      for (var n = 0; n < count && out.length < limit; n++) {
+        var x = r.left + Math.random() * r.width, y = r.top + Math.random() * r.height;
+        out.push({ x: x, y: y, glyph: ASCII_GLYPHS[Math.floor(Math.random() * ASCII_GLYPHS.length)],
+          color: ASCII_COLORS[Math.floor(Math.random() * ASCII_COLORS.length)], size: 16 + Math.floor(Math.random() * 3),
+          delay: Math.random() * 180, lift: 40 + Math.random() * 90, fade: asciiFade(Math.hypot(x - cx, y - cy), half),
+          phase: Math.random() * Math.PI * 2, spiral: 14 + Math.random() * 14 });
+      }
+    }
+    return out;
   }
   // The legacy finder no longer has a visual effect: its particle field was removed (owner rule, 1.0.21).
   // Its results still arrive through done(), so search and focus behaviour are unchanged.
@@ -918,6 +948,7 @@
       if (!ctx) { canvas.remove(); return function () {}; }
       ctx.scale(dpr, dpr);
       var particles = makeShortlistParticles(options.elements, mouthAt(), 600);
+      var asciiGlyphs = spell === 'ascii' ? makeAsciiGlyphs(options.elements, 900) : [];
       var started = performance.now();
       function dot(x, y, size, color, alpha) { ctx.globalAlpha = alpha; ctx.fillStyle = color; ctx.fillRect(x - size / 2, y - size / 2, size, size); }
       // R10-09 (round 11): the dust follows a U-shaped arc like PDF p17 and p18: it dips below both ends and rises into the mouth.
@@ -931,6 +962,31 @@
         [0, 1].forEach(function (i) { ctx.beginPath(); ctx.arc(m.x - 24 + i * 18, m.y - 43 - puff * (12 + i * 6), 5 + puff * 5, 0, Math.PI * 2); ctx.fill(); });
         ctx.font = '600 13px ui-monospace,SFMono-Regular,Menlo,monospace'; ctx.fillStyle = '#070F23'; ctx.fillText('pff.', m.x - 15, m.y - 62);
       }
+      // ASCII inhale (round 21): each glyph appears where its block is, then flies on its own arc into the mouth over about
+      // 1.18 s (160 ms hold + 1180 ms flight). The mouth is read on every frame (mouthAt), so the glyphs follow the launcher.
+      function drawAscii(elapsed, m) {
+        var arrived = 0;
+        asciiGlyphs.forEach(function (g) {
+          var kg = Math.max(0, Math.min(1, (elapsed - 160 - g.delay) / 1180)), eg = kg * kg * (3 - 2 * kg);
+          var appear = Math.max(0, Math.min(1, (elapsed - g.delay) / 160));
+          if (kg >= 1) arrived++;
+          if (appear <= 0) return;
+          var from = { x: g.x, y: g.y }, bend = { x: (g.x + m.x) / 2 - g.lift * .4, y: Math.min(g.y, m.y) - g.lift };
+          var pos = quadPoint(from, bend, m, eg);
+          // Round 22 (D2, PDF p15): a spiral. The offset swings round the arc and is zero at the start and at the mouth.
+          var swirl = g.spiral * Math.sin(Math.PI * eg), turn = g.phase + eg * 4 * Math.PI;
+          pos = { x: pos.x + Math.cos(turn) * swirl, y: pos.y + Math.sin(turn) * swirl * .6 };
+          var alpha = appear * g.fade * (1 - Math.max(0, (kg - .8) / .2)), size = g.size * (1 - .6 * kg);
+          if (alpha <= .01) return;
+          ctx.globalAlpha = alpha; ctx.fillStyle = g.color;
+          ctx.font = '600 ' + size.toFixed(1) + 'px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
+          // Navy halo under each glyph: the cream glyph keeps its contrast on the cream picks cards as well as on the navy stage.
+          ctx.strokeStyle = '#070F23'; ctx.lineWidth = 3; ctx.lineJoin = 'round'; ctx.strokeText(g.glyph, pos.x, pos.y);
+          ctx.fillText(g.glyph, pos.x, pos.y);
+        });
+        window.__toddyLastSpell = { spell: 'ascii', glyphs: asciiGlyphs.length, arrived: arrived, mouth: { x: m.x, y: m.y }, elapsed: Math.round(elapsed) };
+        if (elapsed >= 1660 && elapsed < 2080) mouthPuff(m, elapsed);
+      }
       function frame(now) {
         if (stopped) return;
         var elapsed = now - started, m = mouthAt();
@@ -939,7 +995,9 @@
         var k = Math.max(0, Math.min(1, (elapsed - 160) / 1500)), e = k * k * (3 - 2 * k), fadeIn = Math.min(1, elapsed / 160);
         var arrive = k > .9 ? (1 - k) / .1 : 1;
         ctx.clearRect(0, 0, w, h);
-        if (spell === 'swoosh') {
+        if (spell === 'ascii') {
+          drawAscii(elapsed, m);
+        } else if (spell === 'swoosh') {
           // MAGIC SWOOSH (PDF p19): a brief source-colour ribbon. Every fourth sampled piece of text drags a band from a
           // tail (0.28 of the flight behind the head) to the head on the same arc the other spells use, and the band
           // thins as it settles into the mouth. Ribbon points are drawn with moveTo/lineTo + stroke.
@@ -963,12 +1021,15 @@
             // at the card and taper to about 4 px at the mouth. Three ribbons leave the card's right edge with a horizontal first control
             // point, start 80 ms apart, and carry a soft halo (wider and faint), a solid blue core and a pale centre line (p19's lighter edge).
             var cardW = options.source && options.source.cardW ? options.source.cardW : 318;
-            var T = Math.max(8, Math.min(18, cardW * .038));
-            var ribbons = [{ dy: -T * 1.15, delay: 0 }, { dy: 0, delay: 80 }, { dy: T * 1.15, delay: 160 }];
+            // Round 22 (D1, review): the ribbons were too thin to read in the 390 captures (12 px at the card, 4 px at the mouth, on pink).
+            // They are now about 7 percent of the card width: about 22 px thick at 390 and tapering to about 8 px at the mouth.
+            var T = Math.max(16, Math.min(26, cardW * .07));
+            var ribbons = [{ dy: -T * 1.15, delay: 0 }, { dy: 0, delay: 50 }, { dy: T * 1.15, delay: 100 }];
+            var headFar = 0; // Round 24: the farthest ribbon head from the live mouth on this frame (0 once all three have landed)
             ribbons.forEach(function (rb, ri) {
-              var kr = Math.max(0, Math.min(1, (elapsed - 160 - rb.delay) / 1500)), er = kr * kr * (3 - 2 * kr);
+              var kr = Math.max(0, Math.min(1, (elapsed - 160 - rb.delay) / 1240)), er = kr * kr * (3 - 2 * kr);
               var p = { x: src.x, y: src.y + rb.dy };
-              var mo = { x: m.x + (ri - 1) * 4, y: m.y };
+              var mo = { x: m.x, y: m.y }; // Round 24 (MAJOR-2): every ribbon lands on the live mouth centre
               var L = Math.hypot(mo.x - p.x, mo.y - p.y);
               // Horizontal start (p19): the first control point runs out to the right of the card, then the ribbon sweeps down-left and
               // arrives at the mouth from the right, so the three ribbons read as one sweep rather than a drop along the card edge.
@@ -980,25 +1041,30 @@
                 tt = t0 + (er - t0) * i2 / N;
                 pa = ribbonAt(Math.max(0, tt - .004)); pb = ribbonAt(Math.min(1, tt + .004));
                 tx = pb.x - pa.x; ty = pb.y - pa.y; len = Math.hypot(tx, ty) || 1; nx = -ty / len; ny = tx / len;
-                half = (T / 2) * (.35 + .65 * Math.pow(1 - i2 / N, .8));
+                half = (T / 2) * Math.pow(1 - i2 / N, .8); // Round 24: the band tapers to a point on the mouth (last vertices exactly on it)
                 pb = ribbonAt(tt);
                 left.push({ x: pb.x + nx * half, y: pb.y + ny * half }); right.push({ x: pb.x - nx * half, y: pb.y - ny * half });
                 hl.push({ x: pb.x + nx * half * 1.9, y: pb.y + ny * half * 1.9 }); hr.push({ x: pb.x - nx * half * 1.9, y: pb.y - ny * half * 1.9 });
               }
-              var fade = fadeIn * (1 - Math.max(0, (kr - .85) / .15));
-              var poly = function (a, b, alpha, colour) {
+              var hd = ribbonAt(er); headFar = Math.max(headFar, Math.hypot(hd.x - m.x, hd.y - m.y));
+              var fade = fadeIn * (1 - Math.max(0, (kr - .97) / .03)); // Round 24: the band stays visible up to the mouth (it fades in the last 3 %)
+              var poly = function (a, b, alpha, colour, outline) {
                 ctx.globalAlpha = alpha; ctx.fillStyle = colour; ctx.beginPath(); ctx.moveTo(a[0].x, a[0].y);
                 for (var q = 1; q <= N; q++) ctx.lineTo(a[q].x, a[q].y);
                 for (var z = N; z >= 0; z--) ctx.lineTo(b[z].x, b[z].y);
                 ctx.closePath(); ctx.fill();
+                // Round 22 (D1): a thin navy edge on the solid core keeps the blue band readable on the pink stage.
+                if (outline) { ctx.globalAlpha = alpha * .6; ctx.strokeStyle = '#070F23'; ctx.lineWidth = 1.5; ctx.stroke(); }
               };
               poly(hl, hr, fade * .22, '#7692E7'); // soft halo
-              poly(left, right, fade * .95, '#7692E7'); // solid blue core
+              poly(left, right, fade * .95, '#7692E7', true); // solid blue core
               ctx.globalAlpha = fade * .45; ctx.strokeStyle = '#FFFCE6'; ctx.lineWidth = 1; // cream centre line (p19's lighter edge; no pale-blue spell colour)
               ctx.beginPath(); ctx.moveTo((left[0].x + right[0].x) / 2, (left[0].y + right[0].y) / 2);
               for (i2 = 1; i2 <= N; i2++) ctx.lineTo((left[i2].x + right[i2].x) / 2, (left[i2].y + right[i2].y) / 2);
               ctx.stroke();
             });
+            // Round 24: the swoosh's landing is recorded per frame for the harness (read the live mouth, measure the farthest head).
+            window.__toddyLastSpell = { spell: 'swoosh', head: Math.round(headFar * 10) / 10, mouth: { x: m.x, y: m.y }, elapsed: Math.round(elapsed) };
           }
         } else {
           particles.forEach(function (p, i) {
@@ -1019,7 +1085,7 @@
       raf = requestAnimationFrame(frame); return clean;
     } catch (err) { if (canvas) canvas.remove(); return function () {}; }
   }
-  window.__magicToadInhale = { quadPoint: quadPoint, makeShortlistParticles: makeShortlistParticles, playShortlistSpell: playShortlistSpell };
+  window.__magicToadInhale = { quadPoint: quadPoint, makeShortlistParticles: makeShortlistParticles, playShortlistSpell: playShortlistSpell, makeAsciiGlyphs: makeAsciiGlyphs, asciiFade: asciiFade, ASCII_GLYPHS: ASCII_GLYPHS };
 
   function stackCardsIn() {
     if (reduce) return;
@@ -1384,6 +1450,12 @@
 (function () {
   'use strict';
   if (window !== window.top || window.__toddyV2 || !document.getElementById || !document.createElement) return;
+  // Round 23: strings for the v2 text search and the honest error cards, in the same de / es / English pattern as the legacy copy (this
+  // IIFE does not share the flags above, so it reads the language itself).
+  var V2Lang = document.documentElement.lang || navigator.language || '';
+  var V2 = /^de\b/i.test(V2Lang) ? { textHead: 'Gefunden auf dieser Seite.', textNote: 'Kein Produkt. Gefunden auf dieser Seite.', textPrice: 'Auf dieser Seite', scanFail: 'Toddy konnte diese Seite nicht lesen. Bitte nochmal versuchen.', openFail: 'Toddy konnte hier nicht öffnen. Bitte nochmal versuchen.' }
+    : /^es\b/i.test(V2Lang) ? { textHead: 'Encontrado en esta página.', textNote: 'No es un producto. Encontrado en esta página.', textPrice: 'En esta página', scanFail: 'Toddy no pudo leer esta página. Inténtalo de nuevo.', openFail: 'Toddy no pudo abrirse aquí. Inténtalo de nuevo.' }
+    : { textHead: 'Found on this page.', textNote: 'Not a product pick. Found on this page.', textPrice: 'Found on this page', scanFail: 'Toddy could not read this page. Try again.', openFail: 'Toddy could not open on this page. Try again.' };
   function removeLegacyHosts() {
     document.querySelectorAll('[id="mt-host"]').forEach(function (legacyHost) { legacyHost.remove(); });
     document.querySelectorAll('.mt-short').forEach(function (legacyShortlist) { legacyShortlist.remove(); });
@@ -1440,11 +1512,14 @@
   // file runs (build_phone2.py, ?world=egg). The switch is read here once and drives the :host([data-world]) CSS rule.
   var WORLD = window.__toddyWorld === 'egg' ? 'egg' : 'midnight';
   host.setAttribute('data-world', WORLD);
+  // Round 23 (hit-test safeguard): the host is a zero-size box at the top of the stacking order, appended last, so a page overlay
+  // cannot sit above the launcher. It takes no pointer events itself, so the page is not blocked.
+  host.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;margin:0;padding:0;border:0;z-index:2147483647;';
   document.documentElement.appendChild(host);
   // A bounded observer catches a late legacy host without a polling loop.
   watchLegacyHosts();
   var root = host.attachShadow({ mode: 'closed' });
-  var state = { open: false, view: 'question', spell: 'ash', spellMenu: false, chosen: null, busy: false, focus: null, query: '', pickIndex: 0, all: [], picks: [], stopSpell: null, timers: [], highlight: null, saved: [], openSaved: [], gumReady: false, notice: '' };
+  var state = { open: false, view: 'question', spell: 'ascii', spellMenu: false, chosen: null, busy: false, focus: null, query: '', pickIndex: 0, all: [], picks: [], stopSpell: null, timers: [], highlight: null, saved: [], openSaved: [], gumReady: false, notice: '' };
   function recordFailure(kind, message) {
     state.notice = message;
     window.__toddyLastFailure = { kind: kind, message: message };
@@ -1505,7 +1580,7 @@
       if (!visible(el) || seen.some(function (x) { return x.contains(el) || el.contains(x); })) return;
       var t = text(el), p = price(t);
       if (p === null || t.length > 1800) return;
-      var titleEl = el.querySelector('h1,h2,h3,h4,a[title],[itemprop="name"]'), title = text(titleEl) || t.split(/(?:€|EUR)/i)[0], image = el.querySelector('img');
+      var titleEl = el.querySelector('h1,h2,h3,h4,a[title],[itemprop="name"]'), title = (titleEl ? text(titleEl) : '') || fallbackTitle(t), image = el.querySelector('img');
       if (title.length < 3) return;
       seen.push(el);
       out.push({ el: el, title: title.slice(0, 140), price: p, raw: t, image: image && image.complete && image.currentSrc ? image.currentSrc : '' });
@@ -1513,6 +1588,37 @@
     return out;
   }
   function queryLimit(q) { var m = String(q).match(/(?:under|below|unter|menos de|<|bis|max(?:imal)?|höchstens|up to|hasta|budget)\s*(?:EUR|€)?\s*(\d+(?:[.,]\d+)?)/i); return m ? { value: Number(m[1].replace(',', '.')), strict: /(?:under|below|unter|menos de|<)/i.test(m[0]) } : null; }
+  // FIX (scratch, cos.com case): plain visible-text fallback. Used only when no product card matches, so menus, links,
+  // headings and body text that show the word give a 'View on this page' result. Price is null for these hits.
+  // Round 23 (text search fallback). Visible page text is read ONLY here, for matching, when the user submits a query. Nothing is stored,
+  // sent or logged: this path makes no network, storage or messaging call (tests/test_r23_text_search.cjs checks that, and the ASCII
+  // spell never calls it). Matching folds case and diacritics, and ue / oe / ae match ü / ö / ä, so buergergeld finds Bürgergeld.
+  function foldText(s) { return String(s).toLowerCase().replace(/ß/g, 'ss').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/ue/g, 'u').replace(/oe/g, 'o').replace(/ae/g, 'a'); }
+  // The typed price limit is not a word on the page, so it is removed before the text search.
+  function textQuery(q) { return String(q).replace(/(?:under|below|unter|menos de|<|bis|max(?:imal)?|höchstens|up to|hasta|budget)\s*(?:EUR|€)?\s*\d+(?:[.,]\d+)?/i, ' '); }
+  function textHits(q) {
+    var terms = foldText(q).split(/\s+/).filter(function (w) { return w.length >= 2; });
+    if (!terms.length) return [];
+    var out = [], seen = [];
+    var walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, { acceptNode: function (n) {
+      var p = n.parentElement;
+      if (!p || /^(SCRIPT|STYLE|NOSCRIPT|TEXTAREA|INPUT|SELECT|OPTION|SVG)$/i.test(p.tagName) || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+      if (p.closest && p.closest('#toddy-v2-host')) return NodeFilter.FILTER_REJECT;
+      try { if (p.checkVisibility && !p.checkVisibility({ visibilityProperty: true })) return NodeFilter.FILTER_REJECT; } catch (err) { /* keep the node */ }
+      return NodeFilter.FILTER_ACCEPT;
+    } });
+    var node;
+    while ((node = walker.nextNode()) && out.length < 5) {
+      var low = foldText(node.nodeValue);
+      if (!terms.every(function (w) { return low.indexOf(w) !== -1; })) continue;
+      var el = node.parentElement.closest('a,button,li,h1,h2,h3,h4,h5,h6,p,label,article,td') || node.parentElement;
+      if (seen.indexOf(el) !== -1) continue;
+      seen.push(el);
+      var t = node.nodeValue.replace(/\s+/g, ' ').trim();
+      out.push({ el: el, title: t.slice(0, 140), price: null, raw: t, image: '' });
+    }
+    return out;
+  }
   function ranking(all, q) {
     var cap = queryLimit(q), words = String(q).toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) || [], terms = words.filter(function (w) { return !/^(under|below|unter|menos|bis|max|budget|sofa)$/.test(w); });
     return all.filter(function (p) { return cap === null || (cap.strict?p.price<cap.value:p.price<=cap.value); }).map(function (p) { p.score = words.reduce(function (n, w) { return n + (p.raw.toLowerCase().includes(w) ? 1 : 0); }, 0) - p.price / 100000; return p; }).filter(function (p) { return !terms.length || p.score + p.price / 100000 > 0; }).sort(function (a, b) { return b.score - a.score; }).slice(0, 3);
@@ -1525,7 +1631,7 @@
   function pickFacts(p, q) {
     var lines = [];
     var limit = queryLimit(q);
-    if (limit !== null) {
+    if (limit !== null && p.price !== null) {
       var gap = Math.round((limit.value - p.price) * 100) / 100;
       if (gap > 0) lines.push(moneyText(gap) + ' below your limit');
       else if (gap === 0) lines.push('At your limit');
@@ -1533,11 +1639,21 @@
     return lines;
   }
   // "Lower price" goes to the single pick with the lowest shown price (the first one, on a tie).
-  function lowestPriceIndex(list) { var best = 0; list.forEach(function (x, i) { if (x.price < list[best].price) best = i; }); return best; }
+  // Round 24 (MINOR-2): a tile with no heading takes its name from the text before the price; if the price comes first ("€120 Sofa
+  // Modell 1"), the name is the rest of the text without the price. Without this the tile was dropped (empty title).
+  function fallbackTitle(t) {
+    var before = String(t).split(/(?:€|EUR)/i)[0].replace(/[\d.,]+\s*$/, '').trim(); // "Sofa Modell 1 120,00 €": the trailing price is not part of the name
+    if (before.length >= 3 && !/^[\d.,\s]+$/.test(before)) return before; // "120,00 € Sofa": the text before the sign is only the price
+    return String(t).replace(/[\d.,]+\s*(?:€|EUR)|(?:€|EUR)\s*[\d.,]+/gi, ' ').replace(/\s+/g, ' ').trim();
+  }
+  // Round 24: text hits have no price (null) and never take the "Lower price" tag; -1 when no card has a price.
+  function lowestPriceIndex(list) { var best = -1; list.forEach(function (x, i) { if (x.price === null) return; if (best < 0 || x.price < list[best].price) best = i; }); return best; }
   function escapeHtml(s) { return String(s).replace(/[&<>]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]; }); }
   function escapeAttr(s) { return escapeHtml(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
   function formatPrice(n) { var p = n.toFixed(2).split('.'); return '€' + p[0] + '<span class="cents">.' + p[1] + '</span>'; }
-  function spellName(s) { return { ash: 'ASH DISSOLVE', snack: 'PIXEL SNACK', swoosh: 'MAGIC SWOOSH' }[s]; }
+  // Round 21 (owner, restored): the ASCII inhale is the default spell. Its menu label is Geist, sentence case (not caps).
+  // Round 22 (D4): all four spell names use the same sentence case in Geist, like "Ask Toddy".
+  function spellName(s) { return { ascii: 'Ascii inhale', ash: 'Ash dissolve', snack: 'Pixel snack', swoosh: 'Magic swoosh' }[s]; }
   function shuffle(a) { for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)), t = a[i]; a[i] = a[j]; a[j] = t; } return a; }
 
   // Geometry only: the rectangles of every visible text line outside the chosen card (headings,
@@ -1737,7 +1853,7 @@
     '.result-head .ptoad{width:120px;margin:0}' +
     // Pixel labels (QA r4 4): Bitcount 600 (already loaded for the headings). Its dot-square glyphs match the PDF pixel labels
     // (p02, p09, p19); GeistPixel Regular with a synthetic bold read as thin line glyphs.
-    '.eyebrow{color:#000;font:600 15px/1.2 Bitcount,ui-monospace,monospace;-webkit-text-stroke:1px currentColor;letter-spacing:.08em;text-transform:uppercase}' +
+    '.eyebrow{color:#000;font:600 16px/1.2 Bitcount,ui-monospace,monospace;-webkit-text-stroke:1px currentColor;letter-spacing:.08em;text-transform:uppercase}' +
     '.panel h1{font:600 22px/1.1 var(--toddy-headline);margin:10px 0;color:#000}' +
     '.helper,.honesty,.reason,.price,.query-strip{font-size:16px;line-height:1.45;font-weight:400;color:#000}' +
     '.goal{display:flex;flex-direction:column;gap:0;margin:16px 0}' +
@@ -1763,7 +1879,7 @@
     '.magic-toggle .mt-label{text-decoration:none}' +
     '.magic-toggle[aria-expanded="true"] .mt-arrow{transform:rotate(180deg)}' +
     '.magic-toggle:hover .mt-arrow{background:#FFFFFF}' +
-    '.magic-pill{background:var(--mist);border-radius:999px;padding:8px 12px;font:400 15px/1 Geist,system-ui,sans-serif;white-space:nowrap}' +
+    '.magic-pill{background:var(--mist);border-radius:999px;padding:8px 12px;font:400 16px/1 Geist,system-ui,sans-serif;white-space:nowrap}' +
     '.spell-menu[hidden]{display:none!important}' +
     // UI review (round 12): the spell list opens inline under the Magic style row and pushes the footer down. It never covers "Find my picks".
     '.spell-menu{position:static;display:grid;gap:6px;width:100%;margin:8px 0 0;padding:0;background:transparent;box-shadow:none}' +
@@ -1910,13 +2026,15 @@
     '@media(max-width:360px){.build:has(.chosen-set){display:flex;flex-direction:column}.build:has(.chosen-set) > .query-strip{order:1;margin:8px 0}.build:has(.chosen-set) > .chosen-set{order:2}.build:has(.chosen-set) > .chosen-set > .pick.expanded{padding:12px}.pick.expanded .product-image{height:auto;max-height:100px}.pick.expanded .expanded-text h2{font-size:22px;margin:8px 0 4px}}' +
     // N3 (QA r3): the chosen card is taller than a 320 x 568 panel, and the panel had a hidden scrollbar, so the caption was
     // below the fold with no cue. (R10-07, round 11: the scrollbar stays hidden at every width, as the panel always had it; the panel still scrolls by wheel and touch.)
-    '@media(max-width:360px){.pick-caption{display:none}.pick.expanded + .caption{margin-top:8px}.pick-return{top:auto;bottom:8px}.panel{scrollbar-width:none}.panel::-webkit-scrollbar{display:none}.launcher img{width:128px!important;height:128px!important}}' +
+    // Round 22 (D5): at 360 px and below the picks stage keeps a bottom safe area, so the toad (128 px) and its pill never cover the last card text.
+    '@media(max-width:360px){.build:has(.pick-set){padding-bottom:212px}.pick-caption{display:none}.pick.expanded + .caption{margin-top:8px}.pick-return{top:auto;bottom:8px}.panel{scrollbar-width:none}.panel::-webkit-scrollbar{display:none}.launcher img{width:88px!important;height:88px!important}}' +
     // Round 19 (review 1027, NF-1; WCAG 2.4.7): ONE focus treatment for every control. The mist View buttons on desktop cards 2 and 3
     // lost their ring to a more specific rule, so this block sits last and uses !important: pink fill, black label, black ring with a cream gap.
     '.control:focus-visible,.spell:focus-visible,.nav-arrow:focus-visible,.text-action:focus-visible,.magic-toggle:focus-visible,.pick-return button:focus-visible,.head-restore:focus-visible,.close:focus-visible,.pick-set > .pick > .control:focus-visible,.pick-set > .pick:not(:first-child) > .control:focus-visible{background:var(--pink)!important;color:#000!important;box-shadow:0 0 0 3px #FFFCE6,0 0 0 6px #070F23!important;outline:none}' +
     // Round 19 (review 1027, NF-2): with Magic style open, the card pushes its caveat and rule down out of the way and keeps its top edge,
     // so all three spell rows fit inside the card at 320 x 640, 360, 390 x 844 and 1280 x 800 without an inner scroll.
-    '.build:has(.magic-row.open) > .honesty,.build:has(.magic-row.open) > .hairline{display:none}' +
+    // Round 21: four rows (the ASCII inhale returns) need about 44 px more, so the helper line steps aside with the caveat and rule.
+    '.build:has(.magic-row.open) > .honesty,.build:has(.magic-row.open) > .hairline,.build:has(.magic-row.open) > .helper{display:none}' +
     // Round 19: the query field takes the same ring (cream gap and black ring) instead of its blue glow.
     '.goal input:focus-visible{box-shadow:0 0 0 3px #FFFCE6,0 0 0 6px #070F23!important;outline:none}' +
     '@media(prefers-reduced-motion:reduce){.launcher-bubble,.launcher-action,.control,.spell,.nav-arrow,.frame,.wash{transition:none!important}.build>*{animation:none!important}}' +
@@ -1959,7 +2077,7 @@
     'a,a:visited{color:inherit;text-decoration:none;font-weight:600}a:hover{text-decoration:underline;text-underline-offset:3px}'; }
 
   function spellMenuHtml() {
-    return '<div class="spell-menu" id="toddy-spell-menu" role="menu" ' + (state.spellMenu ? '' : 'hidden') + '>' + ['ash', 'snack', 'swoosh'].map(function (s) { return '<button class="spell" type="button" role="menuitemradio" tabindex="' + (state.spell === s ? 0 : -1) + '" data-spell="' + s + '" aria-checked="' + (state.spell === s) + '"><span class="lbl">' + spellName(s) + '</span></button>'; }).join('') + '</div>';
+    return '<div class="spell-menu" id="toddy-spell-menu" role="menu" ' + (state.spellMenu ? '' : 'hidden') + '>' + ['ascii', 'ash', 'snack', 'swoosh'].map(function (s) { return '<button class="spell" type="button" role="menuitemradio" tabindex="' + (state.spell === s ? 0 : -1) + '" data-spell="' + s + '" aria-checked="' + (state.spell === s) + '"><span class="lbl">' + spellName(s) + '</span></button>'; }).join('') + '</div>';
   }
   function questionHtml() {
     return '<img class="ptoad" src="' + url('toad-idle.png') + '" alt="">' +
@@ -1983,16 +2101,16 @@
     var lowest = lowestPriceIndex(state.picks);
     var cards = state.picks.map(function (p, i) {
       // UI review (round 12): only the lowest price carries a tag; a "Shown price" tag repeated the price line under it, so it is gone.
-      var tag = lowest === i ? '<span class="pick-tag">Lower price</span>' : '';
+      var tag = lowest === i && p.price !== null ? '<span class="pick-tag">Lower price</span>' : '';
       var image = p.image ? '<img class="product-image" src="' + escapeAttr(p.image) + '" alt="">' : placeholderHtml();
       return '<article class="pick' + (i === state.pickIndex ? ' current' : '') + '" data-index="' + i + '"><div class="pick-top"><span>' + pad2(i + 1) + ' / YOUR PICKS</span>' + tag + '</div>' + image +
-        '<h2>' + escapeHtml(p.title) + '</h2><p class="price">' + formatPrice(p.price) + '</p><div class="hairline" aria-hidden="true"></div>' +
+        '<h2>' + escapeHtml(p.title) + '</h2><p class="price">' + (p.price === null ? V2.textPrice : formatPrice(p.price)) + '</p><div class="hairline" aria-hidden="true"></div>' +
         pickFacts(p, state.query).map(function (line) { return '<p class="reason">' + escapeHtml(line) + '</p>'; }).join('') +
         '<button class="control" type="button" data-pick="' + i + '">View on this page <span class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" focusable="false"><path d="M7 17L17 7M9 7h8v8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button></article>';
     }).join('');
     // QA R2-08: a single result has no neighbour, so the arrows and the counter are not offered. Wide screens carry the
     // PDF p25 header action (Bring page back), which closes Toddy and restores the page like X.
-    return '<div class="result-head"><img class="ptoad" src="' + url('toad-idle.png') + '" alt=""><div><h1 tabindex="-1">' + (state.picks.length === 1 ? 'One worth a look.' : state.picks.length === 2 ? 'Two worth a look.' : 'Three worth a look.') + '</h1><p class="helper">The useful bits. Up front.</p></div><button class="head-restore" type="button" data-head-restore><span class="lbl">Bring page back</span></button></div>' +
+    return '<div class="result-head"><img class="ptoad" src="' + url('toad-idle.png') + '" alt=""><div><h1 tabindex="-1">' + (state.textMode ? V2.textHead : state.picks.length === 1 ? 'One worth a look.' : state.picks.length === 2 ? 'Two worth a look.' : 'Three worth a look.') + '</h1><p class="helper">' + (state.textMode ? V2.textNote : 'The useful bits. Up front.') + '</p></div><button class="head-restore" type="button" data-head-restore><span class="lbl">Bring page back</span></button></div>' +
       (String(state.query || '').trim() ? '<p class="query-strip">“' + escapeHtml(state.query) + '”</p>' : '') +
       (state.notice ? '<p class="status" role="status">' + escapeHtml(state.notice) + '</p>' : '') +
       '<div class="pick-set">' + cards + '</div>' +
@@ -2064,10 +2182,12 @@
     var reading = panel.querySelector('.reading'); if (reading) reading.focus({ preventScroll: true });
     var started = Date.now(), slow = Number(window.__toddyReadDelay) || 0;
     setTimeout(function () {
-      var all = cards(), picks = ranking(all, query);
+      var all = cards(), picks = ranking(all, query), textMode = false;
+      // FIX (scratch): when no product card matches and no price limit was typed, search the visible page text.
+      if (!picks.length) { picks = textHits(textQuery(query)); textMode = picks.length > 0; } // Round 23: also with a price limit typed (the limit is not a page word)
       setTimeout(function () {
         if (!state.open || state.view !== 'reading' || state.readingQuery !== query) return;
-        state.all = all; state.picks = picks;
+        state.all = all; state.picks = picks; state.textMode = textMode;
         state.view = picks.length ? 'picks' : 'empty';
         render();
         var heading = panel.querySelector('h1[tabindex]'); if (heading) heading.focus({ preventScroll: true });
@@ -2090,13 +2210,26 @@
     // designed chosen card when the cast ends.
     pickEl.style.opacity = '1';
   }
+  // Round 22 (D2): the ASCII inhale dissolves the page blocks as their glyphs leave. Each block fades over about 1.1 s, with a short
+  // stagger, so the content under the glyphs is gone as the glyphs leave it (not wiped at once). The chosen card stays solid.
+  function fadeSpellBlocks(pickEl) {
+    var i = 0;
+    Array.prototype.forEach.call(panel.querySelectorAll('.build > *:not(.pick-set), .pick-set > article.pick'), function (el) {
+      if (el === pickEl) return;
+      el.style.transition = 'opacity 1.1s linear ' + (60 + (i++ % 4) * 110) + 'ms';
+      el.style.opacity = '0';
+    });
+    pickEl.style.opacity = '1';
+  }
   // "Make room" starts the spell: the wash is the flat navy stage, the particles leave the page text they
   // were sampled from and the chosen card, the clutter fades, and the launcher toad (wherever it is dragged) inhales.
   function spellFailed() {
     state.busy = false; state.chosen = null; cancelHighlight(); wash.classList.remove('spelling'); launcher.hidden = true; launcher.inert = true; castEnd(); state.view = 'picks'; render();
   }
   // Cast-only launcher classes are removed when the cast ends (finish, failure or close).
-  function castEnd() { launcher.classList.remove('above', 'on-pink', 'casting'); }
+  // Round 22 (D3): when the cast ends the launcher goes back to its stored position (state.dragged, or the CSS home). The cast spot
+  // is only ever temporary, so a dragged launcher is never left at a spot chosen for one spell.
+  function castEnd() { launcher.classList.remove('above', 'on-pink', 'casting'); castFrom(); }
   // R8-05 (Round 9): at 320 the launcher toad covered the View button of the card being cast. For the length of the cast the toad
   // moves to the free corner that does not cover it (the bubble is hidden); shut() puts it back with homeLauncher().
   // R9-02 (round 10): the launcher is the mouth during the cast. It shrinks to the cast size (CSS .launcher.casting) and goes to the first spot
@@ -2156,12 +2289,25 @@
     var w = Math.min(14, r.width);
     return { left: r.right - w, right: r.right, top: r.top, bottom: r.bottom, width: w, height: r.height, x: r.right - w, y: r.top };
   }
+  // Round 21: the ASCII inhale's source is the geometry of the picks blocks around the chosen card (heading, query line, the cards,
+  // the arrows and the caveat). Only getBoundingClientRect is read; no text, text node or form value is touched.
+  function glyphBlocks(pickEl, cardRect) {
+    var out = [];
+    [].forEach.call(panel.querySelectorAll('.result-head, .query-strip, .pick-nav, .honesty, .pick-set > .pick'), function (el) {
+      if (el === pickEl) return; // the chosen card stays whole; only the page around it turns into glyphs
+      var r = el.getBoundingClientRect();
+      if (r.width && r.height) out.push(r); // plain rectangles: choose() wraps every source the same way
+    });
+    if (!out.length && cardRect) out.push(cardRect);
+    return out;
+  }
   function choose(p) {
     if (!p || state.busy || !document.contains(p.el)) return;
     stopSpell();
     state.busy = true; state.chosen = p;
     p.el.scrollIntoView({ block: 'center', behavior: 'auto' }); // instant: the sampled text is where the page stays
-    var rects = shuffle(clutterRects(p.el));
+    // Round 21: the ASCII inhale never reads the page's text (no clutterRects walk); its glyph field comes from block geometry only.
+    var rects = state.spell === 'ascii' ? [] : shuffle(clutterRects(p.el));
     wash.classList.add('spelling');
     // QA r7 (R6-02/R7-03, one attempt): the SWOOSH stage is the PDF's pink (p19, p37) while the strands travel; the other spells keep
     // the navy stage. Owner decision: revert by deleting this line if the navy stage is kept for every spell.
@@ -2179,10 +2325,10 @@
     var cardRect = (pickEl || p.el).getBoundingClientRect();
     // R9-01/R9-02 (round 10): the rest of the picks (heading, toad, query, arrows, honesty line) leaves at once, so the chosen card is the
     // only text on the stage and only one Toddy is visible. Then the launcher takes a spot that covers no text (castPlacement).
-    if (pickEl) fadeSpellCard(pickEl);
+    if (pickEl) (state.spell === 'ascii' ? fadeSpellBlocks : fadeSpellCard)(pickEl);
     castPlacement(pickEl);
     // QA r7 (R7-04), R8-03 and R9-04: the dust leaves the card's right edge and flies to the mouth. The shop text is not a source.
-    var sources = pickEl ? dustBands(cardRect) : rects.concat(dustBands(cardRect));
+    var sources = state.spell === 'ascii' ? glyphBlocks(pickEl, cardRect) : pickEl ? dustBands(cardRect) : rects.concat(dustBands(cardRect));
     var started = playSpell(sources.map(function (r) { return { getBoundingClientRect: function () { return r; } }; }), { x: cardRect.left + cardRect.width / 2, y: cardRect.top + cardRect.height / 2, cardW: cardRect.width, edge: { x: cardRect.right - 3, y: cardRect.top + cardRect.height * .6 } });
     if (!started) { spellFailed(); return; }
     later(function () { dissolveClutter(p.el); }, 1000);
@@ -2223,22 +2369,24 @@
     return '';
   }
   function chosenHtml(p) {
-    var i = Math.max(0, state.picks.indexOf(p)), tag = lowestPriceIndex(state.picks) === i ? '<span class="pick-tag">Lower price</span>' : '';
+    var i = Math.max(0, state.picks.indexOf(p)), tag = p.price !== null && lowestPriceIndex(state.picks) === i ? '<span class="pick-tag">Lower price</span>' : '';
     var image = p.image ? '<img class="product-image" src="' + escapeAttr(p.image) + '" alt="">' : '';
     // R3-4: the chosen view has a smaller heading toad (PDF p04 shows a small one), so the card and its caption fit a 390 x 844 panel.
     // Round 14 (review fix 8): the chosen view uses the SAME header and query line as the picks view (same markup, same heights), so the card
     // keeps its top edge from the cast to the settled card. The only change is the card itself.
-    return '<div class="result-head"><img class="ptoad" src="' + url('toad-idle.png') + '" alt=""><div><h1 tabindex="-1">' + (state.picks.length === 1 ? 'One worth a look.' : state.picks.length === 2 ? 'Two worth a look.' : 'Three worth a look.') + '</h1><p class="helper">The useful bits. Up front.</p></div></div>' +
+    return '<div class="result-head"><img class="ptoad" src="' + url('toad-idle.png') + '" alt=""><div><h1 tabindex="-1">' + (state.textMode ? V2.textHead : state.picks.length === 1 ? 'One worth a look.' : state.picks.length === 2 ? 'Two worth a look.' : 'Three worth a look.') + '</h1><p class="helper">' + (state.textMode ? V2.textNote : 'The useful bits. Up front.') + '</p></div></div>' +
       (String(state.query || '').trim() ? '<p class="query-strip">“' + escapeHtml(state.query) + '”</p>' : '') +
       '<div class="chosen-set"><article class="pick expanded ' + (p.image ? 'has-image' : 'no-image') + '"><div class="pick-top"><span>' + pad2(i + 1) + ' / YOUR PICKS</span>' + tag + '</div>' +
       // Left column on wide screens (PDF p26): the image when the page has one; otherwise the price panel, built only from
       // the shown price and the typed budget (nothing is invented).
       '<div class="expanded-body">' + (p.image ? image : placeholderHtml()) + '<div class="expanded-text">' +
-      '<h2>' + escapeHtml(p.title) + '</h2><p class="price">' + formatPrice(p.price) + '</p><div class="hairline" aria-hidden="true"></div>' +
+      '<h2>' + escapeHtml(p.title) + '</h2><p class="price">' + (p.price === null ? V2.textPrice : formatPrice(p.price)) + '</p><div class="hairline" aria-hidden="true"></div>' +
       pickFacts(p, state.query).map(function (line) { return '<p class="reason">' + escapeHtml(line) + '</p>'; }).join('') +
       '<button class="control" type="button" data-show>View on this page <span class="arrow" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" focusable="false"><path d="M7 17L17 7M9 7h8v8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button>' +
       '<button class="text-action link" type="button" data-back><span class="lbl">Back to all picks</span></button>' +
-      '</div></div></article></div>';
+      '</div></div></article></div>' +
+      // Round 22 (D6, PDF p04): the chosen-state caption sits under the chosen card.
+      '<p class="caption">Keep the chosen card in view. Return to all picks without losing the query.</p>';
   }
   // Roving focus for the Magic style menu (WAI-ARIA menu radio group): arrows, Home and End move focus; Enter or Space
   // chooses the focused spell (a native button click).
@@ -2264,14 +2412,27 @@
   }
   function open() {
     if (state.open) return;
-    state.open = true; state.busy = false; state.spellMenu = false; state.view = 'question';
-    state.focus = lastFocus && document.contains(lastFocus) ? lastFocus : document.activeElement;
-    state.all = cards();
-    state.scrollAtOpen = { x: window.scrollX || 0, y: window.scrollY || 0 };
-    freezePage();
-    wash.classList.remove('spelling'); wash.classList.add('opening'); wash.hidden = false; launcher.hidden = true; launcher.inert = true;
-    render();
-    frame.style.opacity = '0'; frame.style.pointerEvents = 'none';
+    // Round 23 (freeze fix): one odd card can no longer kill the picks. A failed scan shows the honest notice and Toddy still opens.
+    var scanned = [];
+    try { scanned = cards(); } catch (err) { recordFailure('scan', V2.scanFail); }
+    try {
+      state.all = scanned;
+      state.open = true; state.busy = false; state.spellMenu = false; state.view = 'question';
+      state.focus = lastFocus && document.contains(lastFocus) ? lastFocus : document.activeElement;
+      state.scrollAtOpen = { x: window.scrollX || 0, y: window.scrollY || 0 };
+      freezePage();
+      wash.classList.remove('spelling'); wash.classList.add('opening'); wash.hidden = false; launcher.hidden = true; launcher.inert = true;
+      render();
+      frame.style.opacity = '0'; frame.style.pointerEvents = 'none';
+    } catch (err) {
+      // Round 23: if the first render fails, roll the state back so the next click opens again (no frozen launcher).
+      state.open = false; state.busy = false; state.view = 'question';
+      try { restore(); unfreezePage(); restoreScroll(); } catch (err2) { /* the page may not have been frozen yet */ }
+      wash.classList.remove('opening', 'spelling'); wash.hidden = true; frame.style.opacity = '1'; frame.style.pointerEvents = '';
+      launcher.hidden = false; launcher.inert = false;
+      recordFailure('open', V2.openFail);
+      return;
+    }
     drawPaint('open', function () { wash.classList.remove('opening'); if (state.open) focusOnOpen(); }); // Round 13 (review item 5): the task comes first; the X keeps its place in the DOM
   }
   function backToPicks() {
@@ -2279,7 +2440,12 @@
     stopSpell(); restore(); unfreezePage(); cancelHighlight(); restoreScroll();
     pickBar.hidden = true;
     state.chosen = null;
-    state.all = cards(); state.picks = ranking(state.all, state.query);
+    // Round 24 (MAJOR-1): the SAME result set comes back. Text hits stay text hits (a text-only page has no product cards, so the card
+    // scan would show "No picks this time"). The hits are kept while they are still on the page; otherwise the text is searched again.
+    var allStill = state.textMode && state.picks.length && state.picks.every(function (p) { return p.el && document.contains(p.el); });
+    if (allStill) { /* keep state.picks as they were */ }
+    else if (state.textMode) { state.picks = textHits(textQuery(state.query)); state.textMode = state.picks.length > 0; }
+    else { state.all = cards(); state.picks = ranking(state.all, state.query); }
     state.view = state.picks.length ? 'picks' : 'empty';
     state.pickIndex = Math.min(state.pickIndex, Math.max(0, state.picks.length - 1));
     wash.classList.remove('spelling'); wash.hidden = false; launcher.hidden = true; launcher.inert = true; frame.style.opacity = '1';
@@ -2287,7 +2453,7 @@
     var heading = panel.querySelector('h1[tabindex]'); if (heading) heading.focus({ preventScroll: true });
   }
   function bringPageBack() { stopSpell(); restore(); unfreezePage(); cancelHighlight(); restoreScroll(); pickBar.hidden = true; state.busy = false; state.chosen = null; state.open = false; wash.classList.remove('spelling'); wash.hidden = true; frame.style.opacity = '1'; launcher.hidden = false; launcher.inert = false; homeLauncher(); idleToad(); returnFocus(); }
-  function shut(){if(!state.open)return;stopSpell();pickBar.hidden=true;cancelHighlight();var done=function(){restore();unfreezePage();restoreScroll();state.busy=false;state.chosen=null;state.open=false;state.spellMenu=false;wash.classList.remove('spelling','opening');wash.style.background='';wash.hidden=true;frame.style.opacity='1';launcher.hidden=false;launcher.inert=false;castEnd();homeLauncher();idleToad();returnFocus();};if(wash.hidden||wash.classList.contains('spelling')){done();return;}wash.classList.add('opening');drawPaint('close',done);}
+  function shut(){if(!state.open)return;stopSpell();pickBar.hidden=true;cancelHighlight();var done=function(){restore();unfreezePage();restoreScroll();state.busy=false;state.chosen=null;state.open=false;state.spellMenu=false;wash.classList.remove('spelling','opening');wash.style.background='';wash.hidden=true;frame.style.opacity='1';launcher.hidden=false;launcher.inert=false;castEnd();homeLauncher();idleToad();returnFocus();state.closing=false;frame.style.pointerEvents='';if(state.reopenAfterClose){state.reopenAfterClose=false;open();}};if(wash.hidden||wash.classList.contains('spelling')){done();return;}state.closing=true;launcher.hidden=false;launcher.inert=false;launcher.classList.add('above');wash.classList.add('opening');drawPaint('close',done);}
   // Opening and closing paint, driven by requestAnimationFrame (the page clock), so each frame can be checked.
   // 'open': navy strokes sweep across the page, the navy veil fills in behind them, and the card paints in from about 55 %.
   // 'close': the same strokes retreat and the veil lifts. 'resize': redrawn at its final state, no animation.
@@ -2370,9 +2536,22 @@
     if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) <= DRAG_PX) return;
     var p = clamp(drag.l + e.clientX - drag.x, drag.t + e.clientY - drag.y); drag.moved = true; launcher.style.left = p.x + 'px'; launcher.style.top = p.y + 'px'; launcher.style.right = 'auto'; launcher.style.bottom = 'auto';
   });
-  launcher.addEventListener('pointerup', function () { var d = drag; drag = null; if (!d || !d.moved) { activate(); return; } state.dragged = { left: parseFloat(launcher.style.left), top: parseFloat(launcher.style.top) }; keepLauncherClear(true); });
+  // Round 23 (click robustness). A press on the launcher is handled once, from a WINDOW capture pointerup (it runs before most page
+  // capture listeners that could swallow the release). A press that did not move opens Toddy; a drag stores the position and never
+  // opens. clickGate makes the click that follows a handled press a no-op, so one click opens once. If the page swallows pointerup,
+  // the click still opens Toddy (fallback). Keyboard Enter and Space on this button arrive as a click (detail 0) and open Toddy.
+  var clickGate = 0;
+  window.addEventListener('pointerup', function () {
+    var d = drag; if (!d || d.handled) return;
+    d.handled = true; drag = null; clickGate = Date.now();
+    if (!d.moved) { activate(); return; }
+    state.dragged = { left: parseFloat(launcher.style.left), top: parseFloat(launcher.style.top) }; keepLauncherClear(true);
+  }, true);
   launcher.addEventListener('pointercancel', function () { drag = null; });
-  launcher.addEventListener('click', function (e) { if (e.detail === 0) activate(); });
+  launcher.addEventListener('click', function () {
+    if (clickGate && Date.now() - clickGate < 700) { clickGate = 0; return; } // this click belongs to a press already handled
+    clickGate = 0; activate();
+  });
   launcher.addEventListener('keydown', function (e) {
     if (!e.altKey || !/^Arrow/.test(e.key)) return;
     e.preventDefault();
@@ -2380,7 +2559,8 @@
     launcher.style.left = p.x + 'px'; launcher.style.top = p.y + 'px'; launcher.style.right = 'auto'; launcher.style.bottom = 'auto';
     state.dragged = { left: p.x, top: p.y }; keepLauncherClear(true);
   });
-  function activate() { if (state.open) { if (state.chosen && !state.busy) backToPicks(); return; } open(); }
+  // Round 24 (MINOR-3): a click during the close paint is not dropped. It is remembered and Toddy opens again once the paint has finished.
+  function activate() { if (state.open) { if (state.closing) { state.reopenAfterClose = true; return; } if (state.chosen && !state.busy) backToPicks(); return; } open(); }
   // N9 (QA r3): the launcher keeps the 16 px side gutter after a clamp (the default position is right 16 px), so it never sits flush with the edge at 320.
   function clamp(x, y) { return { x: Math.max(16, Math.min(innerWidth - launcher.offsetWidth - 16, x)), y: Math.max(4, Math.min(innerHeight - launcher.offsetHeight - 4, y)) }; }
 
